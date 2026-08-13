@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vps"
 version = "0.1.0"
-description = "Normalize VPS offers and provisioning across Hetzner Cloud, OVHcloud, and Contabo."
+description = "A Python module to query VPS prices and normalize provisioning across Hetzner Cloud, OVHcloud, and Contabo."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

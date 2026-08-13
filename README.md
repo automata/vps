@@ -1,5 +1,7 @@
 # `vps`
 
+![](./static/vps-ss001.jpg)
+
 A small Python module and CLI that normalizes VPS discovery and provisioning across:
 
 - **Hetzner Cloud**
