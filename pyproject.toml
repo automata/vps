@@ -3,22 +3,23 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vpsbroker"
+name = "vps"
 version = "0.1.0"
 description = "Normalize VPS offers and provisioning across Hetzner Cloud, OVHcloud, and Contabo."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-authors = [{name = "vpsbroker contributors"}]
+authors = [{name = "vps contributors"}]
 dependencies = [
   "requests>=2.32,<3",
   "rich>=13.7,<15",
   "typer>=0.12,<1",
   "ovh>=1.2,<2",
+  "python-dotenv>=1,<2",
 ]
 
 [project.scripts]
-vpsctl = "vpsbroker.cli:app"
+vps = "vps.cli:app"
 
 [dependency-groups]
 dev = ["pytest>=8,<9"]

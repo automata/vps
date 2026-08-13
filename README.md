@@ -1,4 +1,4 @@
-# vpsbroker / `vpsctl`
+# `vps`
 
 A small Python module and CLI that normalizes VPS discovery and provisioning across:
 
@@ -12,18 +12,33 @@ It exposes a common `Offer`, `Quote`, `Server`, and `CreateServerRequest` model 
 
 ## Install
 
-This project is managed with [uv](https://docs.astral.sh/uv/). From the repository root:
+This project is managed with [uv](https://docs.astral.sh/uv/). From the repository root, create and activate a uv virtual environment, then install the package into it:
 
 ```bash
-uv sync --no-dev
-uv run --no-dev vpsctl --help
+uv venv
+source .venv/bin/activate
+uv sync --active --no-dev
+```
+
+Verify the CLI is installed:
+
+```bash
+vps --help
+```
+
+Verify the Python module is importable from the same virtual environment:
+
+```bash
+python -c "import vps; print(vps.Offer)"
 ```
 
 Development/tests:
 
 ```bash
-uv sync --group dev
-uv run pytest
+uv venv
+source .venv/bin/activate
+uv sync --active --group dev
+pytest
 ```
 
 Build distributions:
@@ -34,11 +49,12 @@ uv build
 
 ## Credentials
 
-Copy `.env.example` to `.env` and fill in the credentials you want to use. The package does not automatically load `.env` files; run commands through uv with `--env-file .env` when you want uv to inject them.
+Copy `.env.example` to `.env` and fill in the credentials you want to use. The `vps` package loads `.env` automatically with `python-dotenv` from the current directory or its parents. Existing shell environment variables take precedence.
 
 ```bash
 cp .env.example .env
-uv run --no-dev --env-file .env vpsctl prices
+# edit .env
+vps prices
 ```
 
 ### Hetzner
@@ -70,16 +86,20 @@ CONTABO_API_PASSWORD=...
 
 ## CLI
 
-The examples below show the console script directly. From a checkout, prefix commands with `uv run --no-dev --env-file .env`, e.g. `uv run --no-dev --env-file .env vpsctl prices`.
+The examples below assume you installed `vps` into a uv virtual environment and activated it with `source .venv/bin/activate`. Credentials are read automatically from `.env` when present.
 
 ### Compare offers/prices
 
 ```bash
-vpsctl prices
-vpsctl prices -p hetzner
-vpsctl prices -p hetzner -p ovhcloud --min-ram 8 --max-monthly 20
-vpsctl prices --json
+vps prices
+vps prices -p hetzner
+vps prices -p hetzner --orderable-only
+vps prices -p ovhcloud
+vps prices -p hetzner -p ovhcloud --currency USD --min-ram 8 --max-monthly 20
+vps prices --currency EUR --json
 ```
+
+Money values in CLI tables are displayed with two decimal places.
 
 Example columns:
 
@@ -87,8 +107,8 @@ Example columns:
 +----------+----------+----------+------+--------+---------+-------------+-------------+--------------------+
 | Provider | Offer    | Location | vCPU | RAM GB | Disk GB | Monthly     | Hourly      | Price source       |
 +----------+----------+----------+------+--------+---------+-------------+-------------+--------------------+
-| hetzner  | cx23     | nbg1     | 2    | 4      | 40      | ... EUR     | ... EUR     | server-types-api   |
-| ovhcloud | ...      | -        | ?    | ?      | ?       | ... GBP/EUR | ?           | public-vps-catalog |
+| hetzner  | cx23     | nbg1     | 2    | 4      | 40      | ... USD     | ... USD     | server-types-api   |
+| ovhcloud | ...      | GRA      | 4    | 16     | 160     | ... USD     | ... USD     | public-vps-catalog |
 | contabo  | V153     | -        | ?    | ?      | 100     | ?           | ?           | price-unavailable...|
 +----------+----------+----------+------+--------+---------+-------------+-------------+--------------------+
 ```
@@ -96,14 +116,14 @@ Example columns:
 ### List existing servers
 
 ```bash
-vpsctl servers
-vpsctl servers -p hetzner --json
+vps servers
+vps servers -p hetzner --json
 ```
 
 ### Quote / dry-run
 
 ```bash
-vpsctl quote hetzner cx23 \
+vps quote hetzner cx23 \
   --name worker-01 \
   --location nbg1 \
   --image ubuntu-24.04
@@ -112,7 +132,7 @@ vpsctl quote hetzner cx23 \
 OVHcloud uses its cart checkout GET as a provider-native dry-run. If OVH reports required configuration labels that the adapter cannot infer, pass them explicitly:
 
 ```bash
-vpsctl quote ovhcloud PLAN_CODE \
+vps quote ovhcloud PLAN_CODE \
   --name worker-01 \
   --location GRA \
   --image 'Ubuntu 24.04' \
@@ -124,7 +144,7 @@ vpsctl quote ovhcloud PLAN_CODE \
 Hetzner:
 
 ```bash
-vpsctl create hetzner cx23 \
+vps create hetzner cx23 \
   --name worker-01 \
   --location nbg1 \
   --image ubuntu-24.04 \
@@ -137,13 +157,13 @@ vpsctl create hetzner cx23 \
 `order` is an alias of `create`:
 
 ```bash
-vpsctl order hetzner cx23 --name worker-02 --location nbg1 --image ubuntu-24.04 --yes
+vps order hetzner cx23 --name worker-02 --location nbg1 --image ubuntu-24.04 --yes
 ```
 
 Contabo (SSH keys are Contabo numeric Secret IDs):
 
 ```bash
-vpsctl create contabo V153 \
+vps create contabo V153 \
   --name worker-01 \
   --location EU \
   --ssh-key 12345 \
@@ -155,7 +175,7 @@ vpsctl create contabo V153 \
 OVHcloud:
 
 ```bash
-vpsctl create ovhcloud PLAN_CODE \
+vps create ovhcloud PLAN_CODE \
   --name worker-01 \
   --location GRA \
   --image 'Ubuntu 24.04' \
@@ -165,9 +185,16 @@ vpsctl create ovhcloud PLAN_CODE \
 
 ## Python API
 
+Use the module from the same activated uv virtual environment. Importing `vps` also loads `.env` automatically, without overriding already-exported environment variables:
+
+```bash
+source .venv/bin/activate
+python your_script.py
+```
+
 ```python
-from vpsbroker.models import CreateServerRequest
-from vpsbroker.providers import HetznerProvider
+from vps.models import CreateServerRequest
+from vps.providers import HetznerProvider
 
 provider = HetznerProvider()
 
@@ -195,7 +222,7 @@ print(quote)
 
 ### Hetzner Cloud
 
-The adapter reads `/server_types` and `/pricing`. Server-type pricing can vary by location; the normalized representation therefore produces one `Offer` per server type/location price combination. Server creation uses `POST /servers`.
+The adapter reads `/server_types` and `/pricing`. Server-type pricing can vary by location; the normalized representation therefore produces one `Offer` per server type/location price combination. When `orderable_only=True` or `vps prices --orderable-only` is used, it also reads `/datacenters` and keeps only server type/location pairs listed in `server_types.available` for at least one datacenter in that location. Server creation uses `POST /servers`.
 
 ### OVHcloud
 
@@ -208,7 +235,7 @@ OVHcloud is normalized around its order/cart model:
 5. `GET /order/cart/{cartId}/checkout` for validation/dry-run,
 6. `POST /order/cart/{cartId}/checkout` to create the order.
 
-OVH catalogue generations are not uniform about exposing CPU/RAM/disk fields, so the adapter treats those specs as optional and only performs a conservative best-effort parse. Use the plan code as the stable normalized offer ID.
+OVH catalogue generations are not uniform about exposing structured CPU/RAM/disk fields, so the adapter treats those specs as optional and uses a conservative regex parser over plan codes/names containing three hyphen-separated numbers, such as `vps-value-1-2-40-vps-2025-model1-degressivity24-10percent` (`cores-ram_gb-disk_gb`). OVH fixed-point prices are normalized to major currency units and, when catalogue tax is exposed, gross monthly amounts to match Hetzner's normalized price style. When a provider only exposes a monthly price, vps derives hourly price as `monthly / 730`. When `vps prices --currency TARGET` is used, prices from all providers are converted with Frankfurter public FX rates and original values are preserved in offer metadata. When the catalogue exposes `vps_datacenter` configuration values, the adapter emits one normalized offer per location. Use the plan code as the stable normalized offer ID.
 
 ### Contabo
 
@@ -241,7 +268,7 @@ Example JSON:
 For API fields not normalized yet, `CreateServerRequest.metadata` is intentionally available. From the CLI:
 
 ```bash
-vpsctl create hetzner cx23 --name demo --metadata-json '{"labels":{"role":"worker"}}' --yes
+vps create hetzner cx23 --name demo --metadata-json '{"labels":{"role":"worker"}}' --yes
 ```
 
 Known metadata keys include:
@@ -256,3 +283,4 @@ Known metadata keys include:
 - OVHcloud API console: https://api.eu.ovhcloud.com/console/?branch=v1&section=/order
 - OVH order-cart configuration guide: https://github.com/ovh/order-cart-examples/blob/master/docs/configuration.en.md
 - Contabo API: https://api.contabo.com/
+- Frankfurter FX API: https://www.frankfurter.app/

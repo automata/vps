@@ -10,12 +10,13 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
+from .fx import FxError, convert_offer_prices, normalize_currency
 from .models import CreateServerRequest, Offer, Quote, Server
 from .provider import ProviderError
 from .registry import configured_providers, make_provider
 
 app = typer.Typer(
-    name="vpsctl",
+    name="vps",
     no_args_is_help=True,
     help="Compare and provision VPS instances across Hetzner, OVHcloud, and Contabo.",
 )
@@ -35,7 +36,8 @@ def _provider_names(values: list[str]) -> list[str]:
 def _money(value: Decimal | None, currency: str | None) -> str:
     if value is None:
         return "?"
-    return f"{value} {currency or ''}".strip()
+    formatted = f"{value.quantize(Decimal('0.01')):.2f}"
+    return f"{formatted} {currency or ''}".strip()
 
 
 def _warn_config(errors: dict[str, str]) -> None:
@@ -137,6 +139,17 @@ def prices(
     min_cpu: int | None = typer.Option(None, help="Minimum vCPU count."),
     min_ram: float | None = typer.Option(None, help="Minimum RAM in GB."),
     max_monthly: float | None = typer.Option(None, help="Maximum monthly price; unknown prices are excluded."),
+    orderable_only: bool = typer.Option(
+        False,
+        "--orderable-only",
+        help="Only include offers the provider reports as currently orderable when available (Hetzner uses datacenter availability).",
+    ),
+    currency: str | None = typer.Option(
+        None,
+        "--currency",
+        "-c",
+        help="Convert priced offers to this ISO currency using Frankfurter FX rates, e.g. USD.",
+    ),
     output_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Fetch and normalize current discoverable offers/prices."""
@@ -144,7 +157,7 @@ def prices(
     offers: list[Offer] = []
     for p in providers:
         try:
-            offers.extend(p.list_offers())
+            offers.extend(p.list_offers(orderable_only=orderable_only))
         except Exception as exc:
             errors[p.name] = str(exc)
     _warn_config(errors)
@@ -156,6 +169,17 @@ def prices(
     if min_ram is not None:
         min_ram_d = Decimal(str(min_ram))
         offers = [o for o in offers if o.ram_gb is not None and o.ram_gb >= min_ram_d]
+    if currency:
+        try:
+            rates = convert_offer_prices(offers, currency)
+        except FxError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        converted = [source for source in sorted(rates.source_to_target) if source != normalize_currency(currency)]
+        if converted:
+            err_console.print(
+                f"[dim]Converted {', '.join(converted)} to {rates.target_currency} using {rates.provider} FX rates.[/dim]"
+            )
+
     if max_monthly is not None:
         max_monthly_d = Decimal(str(max_monthly))
         offers = [o for o in offers if o.monthly_price is not None and o.monthly_price <= max_monthly_d]
@@ -191,7 +215,7 @@ def servers(
 def quote(
     provider: str = typer.Argument(...),
     offer: str = typer.Argument(...),
-    name: str = typer.Option("vpsbroker-quote", "--name"),
+    name: str = typer.Option("vps-quote", "--name"),
     location: str | None = typer.Option(None, "--location"),
     image: str | None = typer.Option(None, "--image"),
     ssh_key: list[str] = typer.Option([], "--ssh-key"),

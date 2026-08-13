@@ -114,7 +114,7 @@ class ContaboProvider(Provider):
             ))
         return offers
 
-    def list_offers(self) -> list[Offer]:
+    def list_offers(self, *, orderable_only: bool = False) -> list[Offer]:
         file_catalog = self._file_catalog()
         if file_catalog is not None:
             return file_catalog

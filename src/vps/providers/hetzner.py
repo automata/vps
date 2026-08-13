@@ -28,7 +28,26 @@ class HetznerProvider(Provider):
             raise ProviderError(f"Hetzner API {response.status_code}: {response.text[:1000]}")
         return response.json() if response.content else {}
 
-    def list_offers(self) -> list[Offer]:
+    def _available_server_type_ids_by_location(self) -> dict[str, set[str]]:
+        """Return server type IDs currently orderable in each Hetzner location."""
+        data = self._request("GET", "/datacenters")
+        result: dict[str, set[str]] = {}
+        for datacenter in data.get("datacenters", []):
+            location_obj = datacenter.get("location")
+            location = location_obj.get("name") if isinstance(location_obj, dict) else location_obj
+            if not location:
+                continue
+
+            server_types = datacenter.get("server_types") or {}
+            available_ids: set[str] = set()
+            for item in server_types.get("available") or []:
+                value = item.get("id") if isinstance(item, dict) else item
+                if value is not None:
+                    available_ids.add(str(value))
+            result.setdefault(str(location), set()).update(available_ids)
+        return result
+
+    def list_offers(self, *, orderable_only: bool = False) -> list[Offer]:
         data = self._request("GET", "/server_types")
         # /pricing is authoritative for the account currency and is also a
         # useful fallback if server-type price objects change shape.
@@ -41,18 +60,38 @@ class HetznerProvider(Provider):
             str(item.get("name") or item.get("id")): item.get("prices") or []
             for item in pricing_root.get("server_types", [])
         }
+        available_by_location = self._available_server_type_ids_by_location() if orderable_only else None
+
         result: list[Offer] = []
         for st in data.get("server_types", []):
             key = str(st.get("name") or st.get("id"))
             prices = st.get("prices") or pricing_by_name.get(key) or []
             if not prices:
-                result.append(self._offer(st, None, currency))
+                if not orderable_only:
+                    result.append(self._offer(st, None, currency))
                 continue
             for price in prices:
-                result.append(self._offer(st, price, currency))
+                available = None
+                if available_by_location is not None:
+                    location = price.get("location")
+                    server_type_id = st.get("id")
+                    available = (
+                        location is not None
+                        and server_type_id is not None
+                        and str(server_type_id) in available_by_location.get(str(location), set())
+                    )
+                offer = self._offer(st, price, currency, available=available)
+                if not orderable_only or offer.available:
+                    result.append(offer)
         return result
 
-    def _offer(self, st: dict[str, Any], price: dict[str, Any] | None, account_currency: str | None = None) -> Offer:
+    def _offer(
+        self,
+        st: dict[str, Any],
+        price: dict[str, Any] | None,
+        account_currency: str | None = None,
+        available: bool | None = None,
+    ) -> Offer:
         price = price or {}
         monthly_obj = price.get("price_monthly") or {}
         hourly_obj = price.get("price_hourly") or {}
@@ -74,7 +113,7 @@ class HetznerProvider(Provider):
             hourly_price=hourly,
             currency=currency,
             price_source="server-types-api",
-            available=True if price else None,
+            available=available if available is not None else (True if price else None),
             metadata={
                 "server_type_id": st.get("id"),
                 "cpu_type": st.get("cpu_type"),

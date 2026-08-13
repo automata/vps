@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
+
+HOURS_PER_MONTH = Decimal("730")
+DERIVED_HOURLY_QUANT = Decimal("0.0001")
 
 
 @dataclass(slots=True)
@@ -21,6 +24,20 @@ class Offer:
     price_source: str = "provider-api"
     available: bool | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.hourly_price is None and self.monthly_price is not None:
+            self.hourly_price = (self.monthly_price / HOURS_PER_MONTH).quantize(
+                DERIVED_HOURLY_QUANT,
+                rounding=ROUND_HALF_UP,
+            )
+            self.metadata.setdefault(
+                "hourly_price_derived_from_monthly",
+                {
+                    "monthly_price": str(self.monthly_price),
+                    "hours_per_month": str(HOURS_PER_MONTH),
+                },
+            )
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)

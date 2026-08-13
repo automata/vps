@@ -1,4 +1,4 @@
-from vpsbroker.providers.hetzner import HetznerProvider
+from vps.providers.hetzner import HetznerProvider
 
 
 class Resp:
@@ -33,6 +33,44 @@ class Session:
         raise AssertionError(url)
 
 
+class OrderableSession(Session):
+    def request(self, method, url, **kwargs):
+        if url.endswith("/server_types"):
+            return Resp({"server_types": [
+                {
+                    "id": 114, "name": "cx23", "description": "CX23", "cores": 2,
+                    "memory": 4.0, "disk": 40, "architecture": "x86",
+                    "prices": [
+                        {
+                            "location": "nbg1",
+                            "price_hourly": {"gross": "0.012"},
+                            "price_monthly": {"gross": "4.76"},
+                        },
+                        {
+                            "location": "fsn1",
+                            "price_hourly": {"gross": "0.012"},
+                            "price_monthly": {"gross": "4.76"},
+                        },
+                    ],
+                },
+                {
+                    "id": 115, "name": "cx33", "description": "CX33", "cores": 4,
+                    "memory": 8.0, "disk": 80, "architecture": "x86",
+                    "prices": [{
+                        "location": "nbg1",
+                        "price_hourly": {"gross": "0.024"},
+                        "price_monthly": {"gross": "9.52"},
+                    }],
+                },
+            ]})
+        if url.endswith("/datacenters"):
+            return Resp({"datacenters": [
+                {"location": {"name": "nbg1"}, "server_types": {"available": [114]}},
+                {"location": {"name": "fsn1"}, "server_types": {"available": [115]}},
+            ]})
+        return super().request(method, url, **kwargs)
+
+
 def test_hetzner_normalizes_per_location_price():
     p = HetznerProvider(token="token", session=Session())
     offers = p.list_offers()
@@ -43,3 +81,10 @@ def test_hetzner_normalizes_per_location_price():
     assert str(o.monthly_price) == "4.76"
     assert o.currency == "EUR"
     assert o.vcpu == 2
+
+
+def test_hetzner_orderable_only_filters_using_datacenter_availability():
+    p = HetznerProvider(token="token", session=OrderableSession())
+    offers = p.list_offers(orderable_only=True)
+    assert [(o.id, o.location) for o in offers] == [("cx23", "nbg1")]
+    assert offers[0].available is True

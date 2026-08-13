@@ -5,7 +5,6 @@ import re
 from decimal import Decimal
 from typing import Any
 
-
 from ..models import CreateServerRequest, Offer, Quote, Server
 from ..provider import ConfigurationError, Provider, ProviderError
 from ..utils import dec, money_from_obj
@@ -42,7 +41,7 @@ class OVHCloudProvider(Provider):
             raise ProviderError(f"OVHcloud API error on {method.upper()} {path}: {exc}") from exc
 
     @staticmethod
-    def _pricing(plan: dict[str, Any]) -> tuple[Decimal | None, str | None, str, str]:
+    def _pricing(plan: dict[str, Any], catalog_currency: str | None = None) -> tuple[Decimal | None, str | None, str, str]:
         """Return monthly-ish price, currency, duration, pricing mode from catalogue plan."""
         pricings = plan.get("pricings") or []
         best: dict[str, Any] | None = None
@@ -60,6 +59,11 @@ class OVHCloudProvider(Provider):
                     break
         best = best or {}
         amount, currency = money_from_obj(best.get("price"))
+        tax, _ = money_from_obj(best.get("tax"))
+        if amount is not None and tax is not None:
+            # Match Hetzner's normalized prices, which use gross amounts.
+            amount += tax
+        currency = currency or best.get("currencyCode") or catalog_currency
         interval = best.get("interval") or 1
         interval_unit = str(best.get("intervalUnit") or "month").lower()
         if amount is not None and interval_unit.startswith("month") and dec(interval):
@@ -68,57 +72,128 @@ class OVHCloudProvider(Provider):
         pricing_mode = str(best.get("mode") or "default")
         return amount, currency, duration, pricing_mode
 
+    @classmethod
+    def _plan_text(cls, plan: dict[str, Any]) -> str:
+        """Text fields that tend to carry OVH VPS sizing hints."""
+        values: list[str] = []
+        for key in ("invoiceName", "planCode", "product", "description", "name"):
+            value = plan.get(key)
+            if isinstance(value, dict):
+                values.extend(str(v) for v in value.values() if v)
+            elif value:
+                values.append(str(value))
+        commercial = ((plan.get("blobs") or {}).get("commercial") or {}) if isinstance(plan.get("blobs"), dict) else {}
+        if isinstance(commercial, dict):
+            values.extend(str(commercial.get(key)) for key in ("brick", "line", "range") if commercial.get(key))
+        return " ".join(values)
+
     @staticmethod
-    def _infer_specs(plan: dict[str, Any]) -> tuple[int | None, Decimal | None, Decimal | None]:
-        """Best-effort extraction; OVH catalog generations do not expose specs uniformly."""
-        blob = " ".join(str(x) for x in [
-            plan.get("invoiceName"), plan.get("product"), plan.get("planCode"), plan.get("description")
-        ] if x)
+    def _sized_decimal(value: str, unit: str = "gb") -> Decimal | None:
+        amount = dec(value)
+        if amount is None:
+            return None
+        return amount * Decimal("1024") if unit.lower().startswith("t") else amount
+
+    @staticmethod
+    def _first_decimal(patterns: list[str], text: str) -> Decimal | None:
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return OVHCloudProvider._sized_decimal(match.group("value"), match.groupdict().get("unit") or "gb")
+        return None
+
+    @staticmethod
+    def _locations_from_plan(plan: dict[str, Any]) -> list[str | None]:
+        locations: list[str | None] = []
+        seen: set[str] = set()
+        for config in plan.get("configurations") or []:
+            if not isinstance(config, dict):
+                continue
+            name = str(config.get("name") or "").lower()
+            if not any(token in name for token in ("datacenter", "location", "zone")):
+                continue
+            values = config.get("values") or []
+            if isinstance(values, str):
+                values = [values]
+            for value in values:
+                if value and str(value) not in seen:
+                    seen.add(str(value))
+                    locations.append(str(value))
+        return locations or [None]
+
+    @classmethod
+    def _infer_specs(cls, plan: dict[str, Any]) -> tuple[int | None, Decimal | None, Decimal | None]:
+        """Best-effort extraction from OVH plan names/codes.
+
+        Modern OVH VPS plan codes and invoice names commonly include a
+        CPU-RAM-disk triplet as three hyphen-separated numbers, e.g.
+        `vps-value-1-2-40-vps-2025-model1-degressivity24-10percent`.
+        """
+        text = cls._plan_text(plan)
         cpu = ram = disk = None
-        cpu_m = re.search(r"(?i)(\d+)\s*(?:v?core|vcpu|cpu)", blob)
-        ram_m = re.search(r"(?i)(\d+(?:\.\d+)?)\s*GB\s*(?:RAM|memory)?", blob)
-        disk_m = re.search(r"(?i)(\d+(?:\.\d+)?)\s*GB\s*(?:NVMe|SSD|disk|storage)", blob)
-        if cpu_m:
-            cpu = int(cpu_m.group(1))
-        if ram_m:
-            ram = dec(ram_m.group(1))
-        if disk_m:
-            disk = dec(disk_m.group(1))
+
+        triplet = re.search(
+            r"(?<![A-Za-z0-9.])(?P<cpu>\d+)-(?P<ram>\d+(?:\.\d+)?)-(?P<disk>\d+(?:\.\d+)?)(?=$|[^A-Za-z0-9.])",
+            text,
+        )
+        if triplet:
+            cpu = int(triplet.group("cpu"))
+            ram = dec(triplet.group("ram"))
+            disk = dec(triplet.group("disk"))
+
+        if cpu is None:
+            cpu_match = re.search(r"(?i)\b(?P<value>\d+)\s*(?:v\s*cores?|vcores?|vcpus?|cpus?|cores?)\b", text)
+            if cpu_match:
+                cpu = int(cpu_match.group("value"))
+        if ram is None:
+            ram = cls._first_decimal([
+                r"(?i)\b(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>tib|tb|gib|gb|t|g)\s*(?:ram|memory|mem)\b",
+                r"(?i)\b(?:ram|memory|mem)\s*:\s*(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>tib|tb|gib|gb|t|g)\b",
+            ], text)
+        if disk is None:
+            disk = cls._first_decimal([
+                r"(?i)\b(?:disk|storage|ssd|nvme)\s*:?\s*(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>tib|tb|gib|gb|t|g)\b",
+                r"(?i)\b(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>tib|tb|gib|gb|t|g)\s*(?:nvme|ssd|disk|storage)\b",
+            ], text)
         return cpu, ram, disk
 
-    def list_offers(self) -> list[Offer]:
+    def list_offers(self, *, orderable_only: bool = False) -> list[Offer]:
         catalog = self._call("get", "/order/catalog/public/vps", ovhSubsidiary=self.subsidiary)
+        locale = catalog.get("locale") or {}
+        catalog_currency = locale.get("currencyCode") if isinstance(locale, dict) else None
         offers: list[Offer] = []
         for plan in catalog.get("plans", []):
             plan_code = plan.get("planCode")
             if not plan_code:
                 continue
-            monthly, currency, duration, pricing_mode = self._pricing(plan)
+            monthly, currency, duration, pricing_mode = self._pricing(plan, catalog_currency)
             vcpu, ram, disk = self._infer_specs(plan)
             product = plan.get("product")
             if isinstance(product, dict):
                 product_name = product.get("name") or product.get("description")
             else:
                 product_name = product
-            offers.append(Offer(
-                provider=self.name,
-                id=str(plan_code),
-                name=str(plan.get("invoiceName") or product_name or plan_code),
-                location=None,
-                vcpu=vcpu,
-                ram_gb=ram,
-                disk_gb=disk,
-                monthly_price=monthly,
-                currency=currency,
-                price_source="public-vps-catalog",
-                available=None,
-                metadata={
-                    "duration": duration,
-                    "pricing_mode": pricing_mode,
-                    "subsidiary": self.subsidiary,
-                    "catalog_plan": plan,
-                },
-            ))
+            metadata = {
+                "duration": duration,
+                "pricing_mode": pricing_mode,
+                "subsidiary": self.subsidiary,
+                "catalog_plan": plan,
+            }
+            for offer_location in self._locations_from_plan(plan):
+                offers.append(Offer(
+                    provider=self.name,
+                    id=str(plan_code),
+                    name=str(plan.get("invoiceName") or product_name or plan_code),
+                    location=offer_location,
+                    vcpu=vcpu,
+                    ram_gb=ram,
+                    disk_gb=disk,
+                    monthly_price=monthly,
+                    currency=currency,
+                    price_source="public-vps-catalog",
+                    available=None,
+                    metadata=metadata,
+                ))
         return offers
 
     def list_servers(self) -> list[Server]:
@@ -130,15 +205,22 @@ class OVHCloudProvider(Provider):
             ips = info.get("ips") or []
             if not ip and ips:
                 ip = ips[0]
+            model = info.get("model")
+            if isinstance(model, dict):
+                offer_id = model.get("name") or model.get("id") or model.get("planCode")
+            elif isinstance(model, str):
+                offer_id = model
+            else:
+                offer_id = None
             result.append(Server(
                 provider=self.name,
                 id=str(service_name),
                 name=str(info.get("displayName") or info.get("name") or service_name),
                 status=str(info.get("state") or "unknown"),
                 location=info.get("zone") or info.get("cluster"),
-                offer_id=info.get("model") if isinstance(info.get("model"), str) else None,
+                offer_id=offer_id,
                 ipv4=ip,
-                metadata={"raw_model": info.get("model")},
+                metadata={"raw_model": model},
             ))
         return result
 
@@ -147,7 +229,7 @@ class OVHCloudProvider(Provider):
         duration = str(request.metadata.get("duration") or (offer.metadata.get("duration") if offer else None) or "P1M")
         pricing_mode = str(request.metadata.get("pricing_mode") or (offer.metadata.get("pricing_mode") if offer else None) or "default")
 
-        cart = self._call("post", "/order/cart", ovhSubsidiary=self.subsidiary, description=f"vpsbroker:{request.name}")
+        cart = self._call("post", "/order/cart", ovhSubsidiary=self.subsidiary, description=f"vps:{request.name}")
         cart_id = str(cart["cartId"])
         self._call("post", f"/order/cart/{cart_id}/assign")
         item = self._call(

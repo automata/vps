@@ -21,8 +21,13 @@ class Provider(ABC):
     name: str
 
     @abstractmethod
-    def list_offers(self) -> list[Offer]:
-        """Return currently discoverable offers."""
+    def list_offers(self, *, orderable_only: bool = False) -> list[Offer]:
+        """Return currently discoverable offers.
+
+        When orderable_only is true, providers should filter to offers they can
+        positively determine are currently orderable. Providers without a
+        dedicated availability API may return their best-effort catalogue.
+        """
 
     @abstractmethod
     def list_servers(self) -> list[Server]:
